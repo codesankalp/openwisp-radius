@@ -24,6 +24,7 @@ from django.utils.timezone import now
 from django.utils.translation import gettext_lazy as _
 from jsonfield import JSONField
 from passlib.hash import lmhash, nthash, sha512_crypt
+from phonenumber_field.modelfields import PhoneNumberField
 from private_storage.fields import PrivateFileField
 from private_storage.storage.files import PrivateFileSystemStorage
 
@@ -1149,6 +1150,7 @@ class AbstractPhoneToken(TimeStampedEditableModel):
     verified = models.BooleanField(default=False)
     token = models.CharField(max_length=8, editable=False, default=generate_sms_token)
     ip = models.GenericIPAddressField()
+    phone_number = PhoneNumberField(unique=False, blank=False, null=False)
 
     class Meta:
         verbose_name = _('Phone verification token')
@@ -1163,9 +1165,6 @@ class AbstractPhoneToken(TimeStampedEditableModel):
         if self._state.adding and self.user.is_active:
             logger.warning(_(f'user {self.user} is already active'))
             raise ValidationError(_('This user is already active.'))
-        if not self.user.phone_number:
-            logger.warning(_(f'user {self.user} does not have a phone number'))
-            raise ValidationError(_('This user does not have a phone number.'))
         date_start = timezone.localdate()
         date_end = date_start + timedelta(days=1)
         PhoneToken = load_model('PhoneToken')
@@ -1213,7 +1212,7 @@ class AbstractPhoneToken(TimeStampedEditableModel):
         sms_message = SmsMessage(
             body=message,
             from_phone=str(org_radius_settings.sms_sender),
-            to=[str(self.user.phone_number)],
+            to=[str(self.phone_number)],
         )
         sms_message.send(meta_data=org_radius_settings.sms_meta_data)
 

@@ -608,13 +608,18 @@ class ValidateAuthTokenView(DispatchOrgMixin, RadiusTokenMixin, CreateAPIView):
                 radius_token = self.get_or_create_radius_token(
                     user, self.organization, renew=renew_required
                 )
+                p_token = PhoneToken.objects.filter(user=user).first()
+                if not user.is_active and p_token:
+                    p_num = p_token.phone_number
+                else:
+                    p_num = user.phone_number
                 response = {
                     'response_code': 'AUTH_TOKEN_VALIDATION_SUCCESSFUL',
                     'auth_token': token.key,
                     'radius_user_token': radius_token.key,
                     'username': user.username,
                     'is_active': user.is_active,
-                    'phone_number': str(user.phone_number),
+                    'phone_number': str(p_num),
                 }
                 self.update_user_last_login(token.user)
                 return Response(response, 200)
@@ -804,7 +809,10 @@ class CreatePhoneTokenView(
     def create(self, *args, **kwargs):
         request = self.request
         self.validate_membership(request.user)
-        phone_token = PhoneToken(user=request.user, ip=self.get_ident(request))
+        phone_number = request.data.get('phone_number', request.user.phone_number)
+        phone_token = PhoneToken(
+            user=request.user, ip=self.get_ident(request), phone_number=phone_number,
+        )
         try:
             phone_token.full_clean()
         except ValidationError as e:
@@ -849,6 +857,7 @@ class ValidatePhoneTokenView(DispatchOrgMixin, GenericAPIView):
             return self._error_response(_('Invalid code.'))
         else:
             user.is_active = True
+            user.phone_number = phone_token.phone_number
             user.save()
             return Response(None, status=200)
 

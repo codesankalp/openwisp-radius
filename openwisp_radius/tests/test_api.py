@@ -1759,9 +1759,8 @@ class TestApiValidateToken(ApiTokenMixin, BaseTestCase):
     def _get_url(self):
         return reverse('radius:validate_auth_token', args=[self.default_org.slug])
 
-    def test_validate_auth_token(self):
+    def _test_validate_auth_token_helper(self, user):
         url = self._get_url()
-        user = self._get_user_with_org()
         token = Token.objects.create(user=user)
         # empty payload
         response = self.client.post(url)
@@ -1791,9 +1790,31 @@ class TestApiValidateToken(ApiTokenMixin, BaseTestCase):
         self.assertEqual(
             response.data['is_active'], user.is_active,
         )
-        self.assertEqual(
-            response.data['phone_number'], str(user.phone_number),
+        if user.is_active:
+            self.assertEqual(
+                response.data['phone_number'], str(user.phone_number),
+            )
+        else:
+            p_num = PhoneToken.objects.filter(user=user).first().phone_number
+            self.assertEqual(
+                response.data['phone_number'], str(p_num),
+            )
+
+    def test_validate_auth_token_with_active_user(self):
+        user = self._get_user_with_org()
+        self._test_validate_auth_token_helper(user)
+
+    def test_validate_auth_token_with_inactive_user(self):
+        user = self._get_user_with_org()
+        user.is_active = False
+        user.save()
+        user.refresh_from_db()
+        phone_token = PhoneToken(
+            user=user, ip='127.0.0.1', phone_number='+237675578296'
         )
+        phone_token.full_clean()
+        phone_token.save()
+        self._test_validate_auth_token_helper(user)
 
     @freeze_time(_TEST_DATE)
     def test_user_auth_updates_last_login(self):
@@ -2005,8 +2026,8 @@ class TestApiPhoneToken(ApiTokenMixin, BaseTestCase):
         url = reverse('radius:phone_token_create', args=[self.default_org.slug])
         r = self.client.post(url, HTTP_AUTHORIZATION=f'Bearer {token.key}')
         self.assertEqual(r.status_code, 400)
-        self.assertIn('non_field_errors', r.data)
-        self.assertIn('does not have a phone number', str(r.data['non_field_errors']))
+        self.assertIn('phone_number', r.data)
+        self.assertIn('This field cannot be null.', str(r.data['phone_number']))
 
     def test_create_phone_token_400_user_already_active(self):
         self.test_register_201()
@@ -2041,8 +2062,12 @@ class TestApiPhoneToken(ApiTokenMixin, BaseTestCase):
         user_token = Token.objects.filter(user=user).last()
         phone_token = PhoneToken.objects.filter(user=user).last()
         # generate entropy to ensure correct token is used
-        PhoneToken.objects.create(user=user, ip=phone_token.ip)
-        phone_token = PhoneToken.objects.create(user=user, ip=phone_token.ip)
+        PhoneToken.objects.create(
+            user=user, ip=phone_token.ip, phone_number=phone_token.phone_number,
+        )
+        phone_token = PhoneToken.objects.create(
+            user=user, ip=phone_token.ip, phone_number=phone_token.phone_number
+        )
         self.assertEqual(phone_token.attempts, 0)
         url = reverse('radius:phone_token_validate', args=[self.default_org.slug])
         r = self.client.post(
@@ -2207,6 +2232,20 @@ class TestApiPhoneToken(ApiTokenMixin, BaseTestCase):
         self.assertEqual(phone_token_qs.count(), 2)
         user.refresh_from_db()
         self.assertFalse(user.is_active)
+        self.assertEqual(user.phone_number, user.phone_number)
+
+        code = phone_token_qs.first().token
+        url = reverse('radius:phone_token_validate', args=[self.default_org.slug])
+        r = self.client.post(
+            url,
+            json.dumps({'code': code}),
+            content_type='application/json',
+            HTTP_AUTHORIZATION=f'Bearer {user_token.key}',
+        )
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(phone_token_qs.count(), 2)
+        user.refresh_from_db()
+        self.assertTrue(user.is_active)
         self.assertEqual(user.phone_number, new_phone_number)
 
     def test_change_phone_number_400_same_number(self):
@@ -2335,6 +2374,10 @@ class TestApiPhoneToken(ApiTokenMixin, BaseTestCase):
         phone_token_qs = PhoneToken.objects.filter(user=user)
         url = reverse('radius:phone_number_change', args=[self.default_org.slug])
         msg = 'This international mobile prefix is not allowed.'
+        radius_settings = self.default_org.radius_settings
+        radius_settings.sms_verification = False
+        radius_settings.full_clean()
+        radius_settings.save()
 
         self.assertEqual(phone_token_qs.count(), 0)
 
@@ -2374,7 +2417,6 @@ class TestApiPhoneToken(ApiTokenMixin, BaseTestCase):
             self.assertEqual(phone_token_qs.count(), 1)
 
         with self.subTest('test change number allowed at org level'):
-            radius_settings = self.default_org.radius_settings
             radius_settings.allowed_mobile_prefixes = '+1,+44'
             radius_settings.full_clean()
             radius_settings.save()

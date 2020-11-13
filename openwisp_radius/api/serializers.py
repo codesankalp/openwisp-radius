@@ -403,11 +403,17 @@ class ChangePhoneNumberSerializer(
         return phone_number
 
     def validate(self, data):
+        old_phone_number = self.user.phone_number
         self.user.phone_number = data['phone_number']
         try:
             self.user.full_clean()
         except ValidationError as e:
             raise serializers.ValidationError(self._get_error_dict(e))
+        # if sms verification is enabled, phone_number should be changed only
+        # after it has been verified
+        org = self.context['view'].organization
+        if org.radius_settings.sms_verification:
+            self.user.phone_number = old_phone_number
         return data
 
     def save(self):
